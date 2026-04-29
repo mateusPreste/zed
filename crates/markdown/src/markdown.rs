@@ -227,15 +227,7 @@ impl MarkdownStyle {
                     right: Some(Length::Definite(px(0.).into())),
                     bottom: Some(Length::Definite(px(12.).into())),
                 },
-                border_style: Some(BorderStyle::Solid),
-                border_widths: EdgesRefinement {
-                    top: Some(AbsoluteLength::Pixels(px(1.))),
-                    left: Some(AbsoluteLength::Pixels(px(1.))),
-                    right: Some(AbsoluteLength::Pixels(px(1.))),
-                    bottom: Some(AbsoluteLength::Pixels(px(1.))),
-                },
-                border_color: Some(colors.border_variant),
-                background: Some(colors.editor_background.into()),
+                background: Some(colors.editor_foreground.opacity(0.08).into()),
                 text: TextStyleRefinement {
                     font_family: Some(theme_settings.buffer_font.family.clone()),
                     font_fallbacks: theme_settings.buffer_font.fallbacks.clone(),
@@ -1192,7 +1184,23 @@ impl MarkdownElement {
         text_align_override: Option<TextAlign>,
     ) {
         let align = text_align_override.unwrap_or(self.style.base_text_style.text_align);
-        let mut heading = div().mt_4().mb_2();
+        let mut heading = match level {
+            pulldown_cmark::HeadingLevel::H1 => div()
+                .mt_0()
+                .pb_1()
+                .border_b_1()
+                .border_color(self.style.rule_color),
+            pulldown_cmark::HeadingLevel::H2 => div()
+                .mt_6()
+                .pb_1()
+                .border_b_1()
+                .border_color(self.style.rule_color),
+            pulldown_cmark::HeadingLevel::H3
+            | pulldown_cmark::HeadingLevel::H4
+            | pulldown_cmark::HeadingLevel::H5
+            | pulldown_cmark::HeadingLevel::H6 => div().mt_6(),
+        }
+        .mb_4();
         heading = apply_heading_style(heading, level, self.style.heading_level_styles.as_ref());
 
         heading = match align {
@@ -1807,7 +1815,6 @@ impl Element for MarkdownElement {
                                             .notify_content();
 
                                         parent_container
-                                            .rounded_lg()
                                             .custom_scrollbars(scrollbars, window, cx)
                                             .into()
                                     } else {
@@ -1818,7 +1825,6 @@ impl Element for MarkdownElement {
                                         &self.code_block_renderer
                                     {
                                         parent_container = parent_container
-                                            .rounded_md()
                                             .border_1()
                                             .border_color(cx.theme().colors().border_variant);
                                     }
@@ -1826,10 +1832,8 @@ impl Element for MarkdownElement {
                                     parent_container.style().refine(&self.style.code_block);
                                     builder.push_div(parent_container, range, markdown_end);
 
-                                    let code_block = div()
-                                        .id(("code-block", range.start))
-                                        .rounded_lg()
-                                        .map(|mut code_block| {
+                                    let code_block = div().id(("code-block", range.start)).map(
+                                        |mut code_block| {
                                             if let Some(scroll_handle) = scroll_handle.as_ref() {
                                                 code_block.style().restrict_scroll_to_axis =
                                                     Some(true);
@@ -1840,7 +1844,8 @@ impl Element for MarkdownElement {
                                             } else {
                                                 code_block.w_full()
                                             }
-                                        });
+                                        },
+                                    );
 
                                     builder.push_text_style(self.style.code_block.text.to_owned());
                                     builder.push_code_block(language);
@@ -2260,13 +2265,15 @@ fn apply_heading_style(
     level: pulldown_cmark::HeadingLevel,
     custom_styles: Option<&HeadingLevelStyles>,
 ) -> Div {
+    heading = heading.font_weight(FontWeight::SEMIBOLD);
+
     heading = match level {
-        pulldown_cmark::HeadingLevel::H1 => heading.text_3xl(),
-        pulldown_cmark::HeadingLevel::H2 => heading.text_2xl(),
-        pulldown_cmark::HeadingLevel::H3 => heading.text_xl(),
-        pulldown_cmark::HeadingLevel::H4 => heading.text_lg(),
-        pulldown_cmark::HeadingLevel::H5 => heading.text_base(),
-        pulldown_cmark::HeadingLevel::H6 => heading.text_sm(),
+        pulldown_cmark::HeadingLevel::H1 => heading.text_size(rems(2.)).line_height(rems(2.5)),
+        pulldown_cmark::HeadingLevel::H2 => heading.text_2xl().line_height(rems(1.875)),
+        pulldown_cmark::HeadingLevel::H3 => heading.text_xl().line_height(rems(1.5625)),
+        pulldown_cmark::HeadingLevel::H4 => heading.text_base().line_height(rems(1.25)),
+        pulldown_cmark::HeadingLevel::H5 => heading.text_sm().line_height(rems(1.09375)),
+        pulldown_cmark::HeadingLevel::H6 => heading.text_size(rems(0.85)).line_height(rems(1.0625)),
     };
 
     if let Some(styles) = custom_styles {
