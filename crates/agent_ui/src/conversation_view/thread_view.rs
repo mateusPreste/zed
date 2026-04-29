@@ -4576,7 +4576,6 @@ impl ThreadView {
 
                 let editing = self.editing_message == Some(entry_ix);
                 let editor_focus = editor.focus_handle(cx).is_focused(window);
-                let focus_border = cx.theme().colors().border_focused;
 
                 let has_checkpoint_button = message
                     .checkpoint
@@ -4605,6 +4604,7 @@ impl ThreadView {
                     .px_2()
                     .gap_1p5()
                     .w_full()
+                    .items_end()
                     .when(is_editable && has_checkpoint_button, |this| {
                         this.children(message.id.clone().map(|message_id| {
                             h_flex()
@@ -4627,34 +4627,17 @@ impl ThreadView {
                     .child(
                         div()
                             .relative()
+                            .max_w(relative(0.7))
                             .child(
                                 div()
                                     .py_3()
                                     .px_2()
                                     .rounded_md()
                                     .bg(cx.theme().colors().editor_background)
-                                    .border_1()
                                     .when(is_indented, |this| {
                                         this.py_2().px_2().shadow_sm()
                                     })
-                                    .border_color(cx.theme().colors().border)
-                                    .map(|this| {
-                                        if !is_editable {
-                                            if is_subagent {
-                                                return this.border_dashed();
-                                            }
-                                            return this;
-                                        }
-                                        if editing && editor_focus {
-                                            return this.border_color(focus_border);
-                                        }
-                                        if editing && !editor_focus {
-                                            return this.border_dashed()
-                                        }
-                                        this.shadow_md().hover(|s| {
-                                            s.border_color(focus_border.opacity(0.8))
-                                        })
-                                    })
+                                    .when(is_editable && !editing, |this| this.shadow_md())
                                     .text_xs()
                                     .child(editor.clone().into_any_element())
                             )
@@ -6005,7 +5988,11 @@ impl ThreadView {
             .p_1p5()
             .bg(header_bg)
             .when(is_preview, |this| this.pt_1().children(run_command_label))
-            .child(markdown_element)
+            .child(
+                div()
+                    .opacity(self.tool_call_metadata_opacity())
+                    .child(markdown_element),
+            )
             .child(div().absolute().top_1().right_1().child(copy_button))
     }
 
@@ -6422,10 +6409,12 @@ impl ThreadView {
         let should_show_raw_input = !is_terminal_tool && !is_edit && !has_image_content;
 
         let input_output_header = |label: SharedString| {
-            Label::new(label)
-                .size(LabelSize::XSmall)
-                .color(Color::Muted)
-                .buffer_font(cx)
+            div().opacity(self.tool_call_metadata_opacity()).child(
+                Label::new(label)
+                    .size(LabelSize::XSmall)
+                    .color(Color::Muted)
+                    .buffer_font(cx),
+            )
         };
 
         let tool_output_display = if is_open {
@@ -7464,11 +7453,16 @@ impl ThreadView {
                     .hover(|s| s.bg(cx.theme().colors().element_hover.opacity(0.5)))
             })
             .overflow_hidden()
-            .child(tool_icon)
+            .child(
+                div()
+                    .opacity(self.tool_call_metadata_opacity())
+                    .child(tool_icon),
+            )
             .child(if has_location {
                 h_flex()
                     .id(("open-tool-call-location", entry_ix))
                     .w_full()
+                    .opacity(self.tool_call_metadata_opacity())
                     .map(|this| {
                         if use_card_layout {
                             this.text_color(cx.theme().colors().text)
@@ -7495,6 +7489,7 @@ impl ThreadView {
             } else {
                 h_flex()
                     .w_full()
+                    .opacity(self.tool_call_metadata_opacity())
                     .child(self.render_markdown(
                         tool_call.label.clone(),
                         MarkdownStyle::themed(MarkdownFont::Agent, window, cx).with_muted_text(cx),
@@ -8036,19 +8031,27 @@ impl ThreadView {
                                     .gap_1p5()
                                     .child(icon)
                                     .child(
-                                        Label::new(title.to_string())
-                                            .size(LabelSize::Custom(self.tool_name_font_size()))
-                                            .truncate(),
+                                        div().opacity(self.tool_call_metadata_opacity()).child(
+                                            Label::new(title.to_string())
+                                                .size(LabelSize::Custom(self.tool_name_font_size()))
+                                                .truncate(),
+                                        ),
                                     )
                                     .when(files_changed > 0, |this| {
                                         this.child(
-                                            Label::new(format!(
-                                                "— {} {} changed",
-                                                files_changed,
-                                                if files_changed == 1 { "file" } else { "files" }
-                                            ))
-                                            .size(LabelSize::Custom(self.tool_name_font_size()))
-                                            .color(Color::Muted),
+                                            div().opacity(self.tool_call_metadata_opacity()).child(
+                                                Label::new(format!(
+                                                    "— {} {} changed",
+                                                    files_changed,
+                                                    if files_changed == 1 {
+                                                        "file"
+                                                    } else {
+                                                        "files"
+                                                    }
+                                                ))
+                                                .size(LabelSize::Custom(self.tool_name_font_size()))
+                                                .color(Color::Muted),
+                                            ),
                                         )
                                         .child(
                                             DiffStat::new(
@@ -8326,6 +8329,10 @@ impl ThreadView {
 
     fn tool_card_border_color(&self, cx: &Context<Self>) -> Hsla {
         cx.theme().colors().border.opacity(0.8)
+    }
+
+    fn tool_call_metadata_opacity(&self) -> f32 {
+        0.65
     }
 
     fn tool_name_font_size(&self) -> Rems {
