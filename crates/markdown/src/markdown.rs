@@ -188,7 +188,10 @@ impl MarkdownStyle {
         let text_color = colors.text;
 
         let mut text_style = window.text_style();
-        let line_height = buffer_font_size * 1.75;
+        let line_height = match font {
+            MarkdownFont::Agent => ui_font_size * 1.5,
+            MarkdownFont::Editor | MarkdownFont::Preview => buffer_font_size * 1.75,
+        };
 
         text_style.refine(&TextStyleRefinement {
             font_family: Some(body_font_family),
