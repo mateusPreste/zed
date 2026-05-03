@@ -946,6 +946,89 @@ struct Selection {
 }
 
 impl Selection {
+    fn is_empty(&self) -> bool {
+        self.start >= self.end
+    }
+
+    fn click_count(&self) -> usize {
+        match self.mode {
+            SelectMode::Character => 1,
+            SelectMode::Word(_) => 2,
+            SelectMode::Line(_) => 3,
+            SelectMode::All => 4,
+        }
+    }
+
+    fn range_and_mode_for_click(
+        source_index: usize,
+        click_count: usize,
+        rendered_text: &RenderedText,
+    ) -> (Range<usize>, SelectMode) {
+        match click_count {
+            1 => {
+                let range = source_index..source_index;
+                (range, SelectMode::Character)
+            }
+            2 => {
+                let range = rendered_text.surrounding_word_range(source_index);
+                (range.clone(), SelectMode::Word(range))
+            }
+            3 => {
+                let range = rendered_text.surrounding_line_range(source_index);
+                (range.clone(), SelectMode::Line(range))
+            }
+            _ => {
+                let range = 0..rendered_text
+                    .lines
+                    .last()
+                    .map(|line| line.source_end)
+                    .unwrap_or(0);
+                (range, SelectMode::All)
+            }
+        }
+    }
+
+    fn extend_to_click(
+        &mut self,
+        source_index: usize,
+        click_count: usize,
+        rendered_text: &RenderedText,
+    ) {
+        let current_range = match &self.mode {
+            SelectMode::Word(range) | SelectMode::Line(range) => range.clone(),
+            SelectMode::Character | SelectMode::All => {
+                let tail = self.tail();
+                tail..tail
+            }
+        };
+
+        let click_count = click_count.max(self.click_count());
+        let (mut range, mut mode) =
+            Self::range_and_mode_for_click(source_index, click_count, rendered_text);
+        self.reversed = false;
+
+        if range.start > current_range.start {
+            range.start = current_range.start;
+        }
+
+        if range.end < current_range.end {
+            range.end = current_range.end;
+            self.reversed = true;
+        }
+
+        match &mut mode {
+            SelectMode::Word(range) | SelectMode::Line(range) => {
+                *range = current_range;
+            }
+            SelectMode::Character | SelectMode::All => {}
+        }
+
+        self.start = range.start;
+        self.end = range.end;
+        self.pending = true;
+        self.mode = mode;
+    }
+
     fn set_head(&mut self, head: usize, rendered_text: &RenderedText) {
         match &self.mode {
             SelectMode::Character => {
@@ -1445,8 +1528,12 @@ impl MarkdownElement {
                     if phase.bubble() && event.button != MouseButton::Right {
                         let position_result =
                             rendered_text.source_index_for_position(event.position);
+                        let is_shift_selecting = event.modifiers.shift
+                            && !event.modifiers.control
+                            && !event.modifiers.alt
+                            && !event.modifiers.secondary();
 
-                        if let Ok(source_index) = position_result {
+                        if !is_shift_selecting && let Ok(source_index) = position_result {
                             if let Some(footnote_ref) =
                                 rendered_text.footnote_ref_for_source_index(source_index)
                             {
@@ -1464,6 +1551,19 @@ impl MarkdownElement {
                             let source_index = match position_result {
                                 Ok(ix) | Err(ix) => ix,
                             };
+
+                            if is_shift_selecting && !markdown.selection.is_empty() {
+                                markdown.selection.extend_to_click(
+                                    source_index,
+                                    event.click_count,
+                                    &rendered_text,
+                                );
+                                window.focus(&markdown.focus_handle, cx);
+                                window.prevent_default();
+                                cx.notify();
+                                return;
+                            }
+
                             if let Some(handler) = on_source_click.as_ref() {
                                 let blocked = handler(source_index, event.click_count, window, cx);
                                 if blocked {
@@ -1474,28 +1574,11 @@ impl MarkdownElement {
                                     return;
                                 }
                             }
-                            let (range, mode) = match event.click_count {
-                                1 => {
-                                    let range = source_index..source_index;
-                                    (range, SelectMode::Character)
-                                }
-                                2 => {
-                                    let range = rendered_text.surrounding_word_range(source_index);
-                                    (range.clone(), SelectMode::Word(range))
-                                }
-                                3 => {
-                                    let range = rendered_text.surrounding_line_range(source_index);
-                                    (range.clone(), SelectMode::Line(range))
-                                }
-                                _ => {
-                                    let range = 0..rendered_text
-                                        .lines
-                                        .last()
-                                        .map(|line| line.source_end)
-                                        .unwrap_or(0);
-                                    (range, SelectMode::All)
-                                }
-                            };
+                            let (range, mode) = Selection::range_and_mode_for_click(
+                                source_index,
+                                event.click_count,
+                                &rendered_text,
+                            );
                             markdown.selection = Selection {
                                 start: range.start,
                                 end: range.end,
@@ -3528,6 +3611,142 @@ mod tests {
         assert_eq!(selection.end, 15);
         assert!(!selection.reversed);
         assert_eq!(selection.tail(), 5);
+    }
+
+    #[gpui::test]
+    fn test_shift_click_extends_character_selection_forward(cx: &mut TestAppContext) {
+        let rendered = render_markdown("Hello world test", cx);
+
+        let mut selection = Selection {
+            start: 5,
+            end: 10,
+            reversed: false,
+            pending: false,
+            mode: SelectMode::Character,
+        };
+
+        selection.extend_to_click(15, 1, &rendered);
+
+        assert_eq!(selection.start, 5);
+        assert_eq!(selection.end, 15);
+        assert!(!selection.reversed);
+        assert!(selection.pending);
+        assert!(matches!(selection.mode, SelectMode::Character));
+    }
+
+    #[gpui::test]
+    fn test_shift_click_extends_character_selection_backward(cx: &mut TestAppContext) {
+        let rendered = render_markdown("Hello world test", cx);
+
+        let mut selection = Selection {
+            start: 5,
+            end: 10,
+            reversed: false,
+            pending: false,
+            mode: SelectMode::Character,
+        };
+
+        selection.extend_to_click(2, 1, &rendered);
+
+        assert_eq!(selection.start, 2);
+        assert_eq!(selection.end, 5);
+        assert!(selection.reversed);
+        assert!(selection.pending);
+    }
+
+    #[gpui::test]
+    fn test_shift_click_extends_reversed_character_selection_from_tail(cx: &mut TestAppContext) {
+        let rendered = render_markdown("Hello world test", cx);
+
+        let mut selection = Selection {
+            start: 2,
+            end: 5,
+            reversed: true,
+            pending: false,
+            mode: SelectMode::Character,
+        };
+
+        selection.extend_to_click(15, 1, &rendered);
+
+        assert_eq!(selection.start, 5);
+        assert_eq!(selection.end, 15);
+        assert!(!selection.reversed);
+        assert!(selection.pending);
+    }
+
+    #[gpui::test]
+    fn test_shift_click_preserves_word_selection_mode(cx: &mut TestAppContext) {
+        let rendered = render_markdown("Hello world test", cx);
+        let word_range = rendered.surrounding_word_range(7);
+
+        let mut selection = Selection {
+            start: word_range.start,
+            end: word_range.end,
+            reversed: false,
+            pending: false,
+            mode: SelectMode::Word(word_range),
+        };
+
+        selection.extend_to_click(13, 1, &rendered);
+
+        assert_eq!(selection.start, 6);
+        assert_eq!(selection.end, 16);
+        assert!(!selection.reversed);
+        assert_eq!(
+            rendered.text_for_range(selection.start..selection.end),
+            "world test"
+        );
+        assert!(matches!(selection.mode, SelectMode::Word(_)));
+    }
+
+    #[gpui::test]
+    fn test_shift_double_click_extends_to_clicked_word(cx: &mut TestAppContext) {
+        let rendered = render_markdown("Hello world test", cx);
+
+        let mut selection = Selection {
+            start: 0,
+            end: 5,
+            reversed: false,
+            pending: false,
+            mode: SelectMode::Character,
+        };
+
+        selection.extend_to_click(7, 2, &rendered);
+
+        assert_eq!(selection.start, 0);
+        assert_eq!(selection.end, 11);
+        assert!(!selection.reversed);
+        assert_eq!(
+            rendered.text_for_range(selection.start..selection.end),
+            "Hello world"
+        );
+        assert!(matches!(selection.mode, SelectMode::Word(_)));
+    }
+
+    #[gpui::test]
+    fn test_shift_triple_click_extends_to_clicked_line(cx: &mut TestAppContext) {
+        let source = "First line\n\nSecond line\n\nThird line";
+        let rendered = render_markdown(source, cx);
+        let second_line_index = source.find("Second").expect("second line is present");
+        let third_line_index = source.find("Third").expect("third line is present");
+        let line_range = rendered.surrounding_line_range(second_line_index);
+
+        let mut selection = Selection {
+            start: line_range.start,
+            end: line_range.end,
+            reversed: false,
+            pending: false,
+            mode: SelectMode::Line(line_range),
+        };
+
+        selection.extend_to_click(third_line_index, 3, &rendered);
+
+        assert_eq!(
+            rendered.text_for_range(selection.start..selection.end),
+            "Second line\nThird line"
+        );
+        assert!(!selection.reversed);
+        assert!(matches!(selection.mode, SelectMode::Line(_)));
     }
 
     #[gpui::test]
