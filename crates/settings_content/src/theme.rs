@@ -147,6 +147,8 @@ pub struct ThemeSettingsContent {
     pub buffer_font_features: Option<FontFeaturesContent>,
     /// The font size for agent responses in the agent panel. Falls back to the UI font size if unset.
     pub agent_ui_font_size: Option<FontSize>,
+    /// The line height for agent responses in the agent panel. Falls back to 1.5 if unset.
+    pub agent_ui_line_height: Option<AgentUiLineHeight>,
     /// The font size for user messages in the agent panel.
     pub agent_buffer_font_size: Option<FontSize>,
     /// The name of a font to use for rendering in the markdown preview.
@@ -456,6 +458,29 @@ where
     if value < 1.0 {
         return Err(serde::de::Error::custom(
             "buffer_line_height.custom must be at least 1.0",
+        ));
+    }
+
+    Ok(value)
+}
+
+/// The line height for agent responses.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+#[serde(transparent)]
+pub struct AgentUiLineHeight(
+    #[serde(deserialize_with = "deserialize_agent_ui_line_height")]
+    #[schemars(range(min = 1.0))]
+    pub f32,
+);
+
+fn deserialize_agent_ui_line_height<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = f32::deserialize(deserializer)?;
+    if value < 1.0 {
+        return Err(serde::de::Error::custom(
+            "agent_ui_line_height must be at least 1.0",
         ));
     }
 
@@ -1417,6 +1442,29 @@ mod tests {
                 .unwrap()
                 .to_string()
                 .contains("buffer_line_height.custom must be at least 1.0")
+        );
+    }
+
+    #[test]
+    fn test_agent_ui_line_height_deserialize_valid() {
+        let content = serde_json::from_value::<ThemeSettingsContent>(json!({
+            "agent_ui_line_height": 1.5
+        }))
+        .unwrap();
+
+        assert_eq!(content.agent_ui_line_height, Some(AgentUiLineHeight(1.5)));
+    }
+
+    #[test]
+    fn test_agent_ui_line_height_deserialize_invalid() {
+        assert!(
+            serde_json::from_value::<ThemeSettingsContent>(json!({
+                "agent_ui_line_height": 0.99
+            }))
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("agent_ui_line_height must be at least 1.0")
         );
     }
 

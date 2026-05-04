@@ -54,6 +54,8 @@ pub struct ThemeSettings {
     pub buffer_font: Font,
     /// The agent font size. Determines the size of text in the agent panel. Falls back to the UI font size if unset.
     agent_ui_font_size: Option<Pixels>,
+    /// The line height for agent responses in the agent panel.
+    agent_ui_line_height: Option<f32>,
     /// The agent buffer font size. Determines the size of user messages in the agent panel.
     agent_buffer_font_size: Option<Pixels>,
     /// The font family to use for rendering in the markdown preview.
@@ -401,6 +403,13 @@ impl ThemeSettings {
             .unwrap_or_else(|| self.ui_font_size(cx))
     }
 
+    /// Returns the agent response line height.
+    pub fn agent_ui_line_height(&self) -> f32 {
+        self.agent_ui_line_height
+            .unwrap_or(1.5)
+            .max(MIN_LINE_HEIGHT)
+    }
+
     /// Returns the agent panel buffer font size.
     pub fn agent_buffer_font_size(&self, cx: &App) -> Pixels {
         cx.try_global::<AgentBufferFontSize>()
@@ -657,6 +666,9 @@ impl settings::Settings for ThemeSettings {
             buffer_font_size: clamp_font_size(content.buffer_font_size.unwrap().into_gpui()),
             buffer_line_height: content.buffer_line_height.unwrap().into(),
             agent_ui_font_size: content.agent_ui_font_size.map(|s| s.into_gpui()),
+            agent_ui_line_height: content
+                .agent_ui_line_height
+                .map(|line_height| line_height.0),
             agent_buffer_font_size: content.agent_buffer_font_size.map(|s| s.into_gpui()),
             markdown_preview_font_family: content
                 .markdown_preview_font_family

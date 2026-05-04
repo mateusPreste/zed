@@ -189,7 +189,7 @@ impl MarkdownStyle {
 
         let mut text_style = window.text_style();
         let line_height = match font {
-            MarkdownFont::Agent => ui_font_size * 1.5,
+            MarkdownFont::Agent => ui_font_size * theme_settings.agent_ui_line_height(),
             MarkdownFont::Editor | MarkdownFont::Preview => buffer_font_size * 1.75,
         };
 

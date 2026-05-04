@@ -976,6 +976,7 @@ impl VsCodeSettings {
             buffer_line_height: None,
             buffer_font_features: None,
             agent_ui_font_size: None,
+            agent_ui_line_height: None,
             agent_buffer_font_size: None,
             markdown_preview_font_family: None,
             markdown_preview_code_font_family: None,
