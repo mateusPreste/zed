@@ -33,9 +33,9 @@ use gpui::{
     AnyElement, App, BorderStyle, Bounds, ClipboardItem, CursorStyle, DispatchPhase, Edges, Entity,
     FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, Hitbox, Hsla, Image,
     ImageFormat, ImageSource, KeyContext, Length, MouseButton, MouseDownEvent, MouseEvent,
-    MouseMoveEvent, MouseUpEvent, Point, ScrollHandle, Stateful, StrikethroughStyle,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollHandle, Stateful, StrikethroughStyle,
     StyleRefinement, StyledImage, StyledText, Task, TextAlign, TextLayout, TextRun, TextStyle,
-    TextStyleRefinement, actions, img, point, quad,
+    TextStyleRefinement, actions, img, point, quad, size,
 };
 use language::{CharClassifier, Language, LanguageRegistry, Rope};
 use parser::CodeBlockMetadata;
@@ -95,6 +95,7 @@ pub struct MarkdownStyle {
     pub code_block: StyleRefinement,
     pub code_block_overflow_x_scroll: bool,
     pub inline_code: TextStyleRefinement,
+    pub inline_code_background_color: Hsla,
     pub block_quote: TextStyleRefinement,
     pub link: TextStyleRefinement,
     pub link_callback: Option<LinkStyleCallback>,
@@ -118,6 +119,7 @@ impl Default for MarkdownStyle {
             code_block: Default::default(),
             code_block_overflow_x_scroll: false,
             inline_code: Default::default(),
+            inline_code_background_color: Default::default(),
             block_quote: Default::default(),
             link: Default::default(),
             link_callback: None,
@@ -250,9 +252,9 @@ impl MarkdownStyle {
                 font_features: Some(theme_settings.buffer_font.features.clone()),
                 font_size: Some(buffer_font_size.into()),
                 font_weight: Some(buffer_font_weight),
-                background_color: Some(colors.editor_foreground.opacity(0.08)),
                 ..Default::default()
             },
+            inline_code_background_color: colors.editor_foreground.opacity(0.08),
             link: TextStyleRefinement {
                 background_color: Some(colors.editor_foreground.opacity(0.025)),
                 color: Some(colors.text_accent),
@@ -1146,6 +1148,24 @@ pub struct MarkdownElement {
     autoscroll: AutoscrollBehavior,
 }
 
+struct InlineCodeBackgroundMetrics {
+    horizontal_padding: Pixels,
+    min_gap: Pixels,
+    vertical_inset: Pixels,
+    corner_radius: Pixels,
+}
+
+struct InlineCodeBackgroundFragment {
+    text_bounds: Bounds<Pixels>,
+    paint_bounds: Bounds<Pixels>,
+    corner_radius: Pixels,
+    min_gap: Pixels,
+}
+
+fn clamp_pixels(value: Pixels, min: Pixels, max: Pixels) -> Pixels {
+    value.max(min).min(max.max(min))
+}
+
 impl MarkdownElement {
     pub fn new(markdown: Entity<Markdown>, style: MarkdownStyle) -> Self {
         Self {
@@ -1188,6 +1208,96 @@ impl MarkdownElement {
     pub fn code_block_renderer(mut self, variant: CodeBlockRenderer) -> Self {
         self.code_block_renderer = variant;
         self
+    }
+
+    fn inline_code_background_metrics(
+        em_width: Pixels,
+        line_height: Pixels,
+    ) -> InlineCodeBackgroundMetrics {
+        InlineCodeBackgroundMetrics {
+            horizontal_padding: clamp_pixels(em_width * 0.25, px(2.), em_width * 0.4),
+            min_gap: clamp_pixels(em_width * 0.18, px(1.), em_width * 0.3),
+            vertical_inset: clamp_pixels(line_height * 0.12, px(1.), line_height * 0.3),
+            corner_radius: clamp_pixels(line_height * 0.15, px(2.), px(5.)),
+        }
+    }
+
+    fn inline_code_background_fragments(
+        text_bounds: impl IntoIterator<Item = Bounds<Pixels>>,
+        em_width: Pixels,
+    ) -> Vec<InlineCodeBackgroundFragment> {
+        let mut fragments = text_bounds
+            .into_iter()
+            .map(|text_bounds| {
+                let metrics =
+                    Self::inline_code_background_metrics(em_width, text_bounds.size.height);
+                let paint_bounds = Bounds {
+                    origin: point(
+                        text_bounds.origin.x - metrics.horizontal_padding,
+                        text_bounds.origin.y + metrics.vertical_inset,
+                    ),
+                    size: size(
+                        text_bounds.size.width + metrics.horizontal_padding * 2.,
+                        text_bounds.size.height - metrics.vertical_inset * 2.,
+                    ),
+                };
+
+                InlineCodeBackgroundFragment {
+                    text_bounds,
+                    paint_bounds,
+                    corner_radius: metrics.corner_radius,
+                    min_gap: metrics.min_gap,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        fragments.sort_by(|left, right| {
+            left.paint_bounds
+                .top()
+                .cmp(&right.paint_bounds.top())
+                .then(left.paint_bounds.left().cmp(&right.paint_bounds.left()))
+        });
+
+        let mut previous_ix = None;
+        for ix in 0..fragments.len() {
+            let Some(previous_fragment_ix) = previous_ix else {
+                previous_ix = Some(ix);
+                continue;
+            };
+
+            if fragments[previous_fragment_ix].paint_bounds.top()
+                != fragments[ix].paint_bounds.top()
+            {
+                previous_ix = Some(ix);
+                continue;
+            }
+
+            let min_gap = fragments[previous_fragment_ix]
+                .min_gap
+                .max(fragments[ix].min_gap);
+            if fragments[previous_fragment_ix].paint_bounds.right() + min_gap
+                > fragments[ix].paint_bounds.left()
+            {
+                let boundary = (fragments[previous_fragment_ix].text_bounds.right()
+                    + fragments[ix].text_bounds.left())
+                    / 2.;
+                let current_right = boundary - min_gap / 2.;
+                let next_left = boundary + min_gap / 2.;
+
+                let current_left = fragments[previous_fragment_ix].paint_bounds.left();
+                fragments[previous_fragment_ix].paint_bounds.size.width =
+                    (current_right - current_left).max(Pixels::ZERO);
+
+                let next_right = fragments[ix].paint_bounds.right();
+                fragments[ix].paint_bounds.origin.x = next_left.min(next_right);
+                fragments[ix].paint_bounds.size.width =
+                    (next_right - fragments[ix].paint_bounds.origin.x).max(Pixels::ZERO);
+            }
+
+            previous_ix = Some(ix);
+        }
+
+        fragments
     }
 
     pub fn on_url_click(
@@ -1429,6 +1539,50 @@ impl MarkdownElement {
                 bounds,
                 Pixels::ZERO,
                 color,
+                Edges::default(),
+                Hsla::transparent_black(),
+                BorderStyle::default(),
+            ));
+        }
+    }
+
+    fn paint_inline_code_backgrounds(
+        &self,
+        rendered_markdown: &RenderedMarkdown,
+        window: &mut Window,
+    ) {
+        if self.style.inline_code_background_color.is_transparent() {
+            return;
+        }
+
+        let mut inline_code_text_style = self.style.base_text_style.clone();
+        inline_code_text_style.refine(&self.style.inline_code);
+        let font_id = window
+            .text_system()
+            .resolve_font(&inline_code_text_style.font());
+        let font_size = inline_code_text_style
+            .font_size
+            .to_pixels(window.rem_size());
+        let em_width = window
+            .text_system()
+            .em_width(font_id, font_size)
+            .log_err()
+            .unwrap_or(font_size);
+        let mut text_bounds = Vec::new();
+
+        for range in rendered_markdown.inline_code_ranges.iter() {
+            text_bounds.extend(
+                rendered_markdown
+                    .text
+                    .bounds_for_source_range(range.clone()),
+            );
+        }
+
+        for fragment in Self::inline_code_background_fragments(text_bounds, em_width) {
+            window.paint_quad(quad(
+                fragment.paint_bounds,
+                fragment.corner_radius,
+                self.style.inline_code_background_color,
                 Edges::default(),
                 Hsla::transparent_black(),
                 BorderStyle::default(),
@@ -2314,6 +2468,7 @@ impl Element for MarkdownElement {
                     builder.push_text(text, range.clone());
                 }
                 MarkdownEvent::Code => {
+                    builder.push_inline_code_range(range.clone());
                     builder.push_text_style(self.style.inline_code.clone());
                     builder.push_text(&parsed_markdown.source[range.clone()], range.clone());
                     builder.pop_text_style();
@@ -2335,10 +2490,12 @@ impl Element for MarkdownElement {
                 MarkdownEvent::InlineHtml => {
                     let html = &parsed_markdown.source[range.clone()];
                     if html.starts_with("<code>") {
+                        builder.push_inline_code_start(range.end);
                         builder.push_text_style(self.style.inline_code.clone());
                         continue;
                     }
                     if html.trim_end().starts_with("</code>") {
+                        builder.pop_inline_code_start(range.start);
                         builder.pop_text_style();
                         continue;
                     }
@@ -2435,6 +2592,7 @@ impl Element for MarkdownElement {
         });
 
         self.paint_mouse_listeners(hitbox, &rendered_markdown.text, window, cx);
+        self.paint_inline_code_backgrounds(rendered_markdown, window);
         rendered_markdown.element.paint(window, cx);
         self.paint_search_highlights(&rendered_markdown.text, window, cx);
         self.paint_selection(&rendered_markdown.text, window, cx);
@@ -2667,6 +2825,8 @@ struct MarkdownElementBuilder {
     pending_line: PendingLine,
     rendered_links: Vec<RenderedLink>,
     rendered_footnote_refs: Vec<RenderedFootnoteRef>,
+    inline_code_ranges: Vec<Range<usize>>,
+    inline_code_start_stack: Vec<usize>,
     current_source_index: usize,
     html_comment: bool,
     rendered_footnote_separator: bool,
@@ -2705,6 +2865,8 @@ impl MarkdownElementBuilder {
             pending_line: PendingLine::default(),
             rendered_links: Vec::new(),
             rendered_footnote_refs: Vec::new(),
+            inline_code_ranges: Vec::new(),
+            inline_code_start_stack: Vec::new(),
             current_source_index: 0,
             html_comment: false,
             rendered_footnote_separator: false,
@@ -2874,6 +3036,22 @@ impl MarkdownElementBuilder {
         });
     }
 
+    fn push_inline_code_range(&mut self, source_range: Range<usize>) {
+        self.inline_code_ranges.push(source_range);
+    }
+
+    fn push_inline_code_start(&mut self, source_index: usize) {
+        self.inline_code_start_stack.push(source_index);
+    }
+
+    fn pop_inline_code_start(&mut self, source_index: usize) {
+        if let Some(start) = self.inline_code_start_stack.pop()
+            && start < source_index
+        {
+            self.push_inline_code_range(start..source_index);
+        }
+    }
+
     fn push_text(&mut self, text: &str, source_range: Range<usize>) {
         self.pending_line.source_mappings.push(SourceMapping {
             rendered_index: self.pending_line.text.len(),
@@ -3031,6 +3209,7 @@ impl MarkdownElementBuilder {
                 links: self.rendered_links.into(),
                 footnote_refs: self.rendered_footnote_refs.into(),
             },
+            inline_code_ranges: self.inline_code_ranges.into(),
         }
     }
 }
@@ -3162,6 +3341,7 @@ fn source_index_for_rendered(mappings: &[SourceMapping], rendered_index: usize) 
 pub struct RenderedMarkdown {
     element: AnyElement,
     text: RenderedText,
+    inline_code_ranges: Rc<[Range<usize>]>,
 }
 
 #[derive(Clone)]
@@ -3501,6 +3681,19 @@ mod tests {
         options: MarkdownOptions,
         cx: &mut TestAppContext,
     ) -> RenderedText {
+        render_markdown_element_with_options(markdown, language_registry, options, cx).text
+    }
+
+    fn render_markdown_element(markdown: &str, cx: &mut TestAppContext) -> RenderedMarkdown {
+        render_markdown_element_with_options(markdown, None, MarkdownOptions::default(), cx)
+    }
+
+    fn render_markdown_element_with_options(
+        markdown: &str,
+        language_registry: Option<Arc<LanguageRegistry>>,
+        options: MarkdownOptions,
+        cx: &mut TestAppContext,
+    ) -> RenderedMarkdown {
         struct TestWindow;
 
         impl Render for TestWindow {
@@ -3534,7 +3727,7 @@ mod tests {
                 )
             },
         );
-        rendered.text
+        rendered
     }
 
     #[gpui::test]
@@ -4369,6 +4562,117 @@ mod tests {
             );
             row_top += line_height;
         }
+    }
+
+    #[gpui::test]
+    fn test_inline_code_ranges_are_tracked_separately(cx: &mut TestAppContext) {
+        let rendered = render_markdown_element("Files:\n`a`\n`b`", cx);
+
+        assert_eq!(rendered.inline_code_ranges.len(), 2);
+        assert_eq!(
+            rendered
+                .text
+                .text_for_range(rendered.inline_code_ranges[0].clone()),
+            "a"
+        );
+        assert_eq!(
+            rendered
+                .text
+                .text_for_range(rendered.inline_code_ranges[1].clone()),
+            "b"
+        );
+    }
+
+    #[gpui::test]
+    fn test_inline_html_code_range_is_tracked(cx: &mut TestAppContext) {
+        let rendered = render_markdown_element("Use <code>path/to/file</code> here", cx);
+
+        assert_eq!(rendered.inline_code_ranges.len(), 1);
+        assert_eq!(
+            rendered
+                .text
+                .text_for_range(rendered.inline_code_ranges[0].clone()),
+            "path/to/file"
+        );
+    }
+
+    #[gpui::test]
+    fn test_inline_code_background_fragments_do_not_overlap() {
+        let fragments = MarkdownElement::inline_code_background_fragments(
+            [
+                Bounds::new(point(px(10.), px(0.)), size(px(10.), px(20.))),
+                Bounds::new(point(px(20.), px(0.)), size(px(10.), px(20.))),
+            ],
+            px(10.),
+        );
+
+        assert_eq!(fragments.len(), 2);
+        assert!(
+            fragments[0].paint_bounds.right() <= fragments[1].paint_bounds.left(),
+            "adjacent inline code backgrounds should not overlap: {:?} {:?}",
+            fragments[0].paint_bounds,
+            fragments[1].paint_bounds
+        );
+        assert!(
+            fragments[1].paint_bounds.left() - fragments[0].paint_bounds.right() + px(0.001)
+                >= fragments[0].min_gap.min(fragments[1].min_gap)
+        );
+    }
+
+    #[gpui::test]
+    fn test_continuous_inline_code_background_fragments_do_not_overlap(cx: &mut TestAppContext) {
+        let rendered = render_markdown_element("<code>a</code><code>b</code>", cx);
+        let text_bounds = rendered
+            .inline_code_ranges
+            .iter()
+            .flat_map(|range| rendered.text.bounds_for_source_range(range.clone()))
+            .collect::<Vec<_>>();
+        let fragments = MarkdownElement::inline_code_background_fragments(text_bounds, px(10.));
+
+        assert_eq!(rendered.inline_code_ranges.len(), 2);
+        assert_eq!(fragments.len(), 2);
+        assert!(
+            fragments[0].paint_bounds.right() <= fragments[1].paint_bounds.left(),
+            "continuous inline code backgrounds should remain separate: {:?} {:?}",
+            fragments[0].paint_bounds,
+            fragments[1].paint_bounds
+        );
+    }
+
+    #[gpui::test]
+    fn test_inline_code_background_metrics_scale_with_text_size() {
+        let small = MarkdownElement::inline_code_background_metrics(px(8.), px(16.));
+        let large = MarkdownElement::inline_code_background_metrics(px(20.), px(40.));
+
+        assert!(large.horizontal_padding > small.horizontal_padding);
+        assert!(large.min_gap > small.min_gap);
+        assert!(large.vertical_inset > small.vertical_inset);
+        assert!(large.corner_radius > small.corner_radius);
+    }
+
+    #[gpui::test]
+    fn test_inline_code_style_does_not_use_text_run_background(cx: &mut TestAppContext) {
+        struct TestWindow;
+
+        impl Render for TestWindow {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+            }
+        }
+
+        ensure_theme_initialized(cx);
+
+        let (_, cx) = cx.add_window_view(|_, _| TestWindow);
+        cx.draw(
+            Default::default(),
+            size(px(600.0), px(600.0)),
+            |window, cx| {
+                let style = MarkdownStyle::themed(MarkdownFont::Agent, window, cx);
+                assert!(style.inline_code.background_color.is_none());
+                assert!(!style.inline_code_background_color.is_transparent());
+                div()
+            },
+        );
     }
 
     #[gpui::test]
